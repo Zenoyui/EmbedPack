@@ -5,6 +5,7 @@
 
 #include <cstring>
 #include <cwchar>
+#include <algorithm>
 #include <limits>
 #include <string>
 #include <utility>
@@ -191,13 +192,70 @@ namespace EmbedPack::Converter
             bool valid() const noexcept { return p != nullptr; }
         };
 
-        static constexpr wchar_t HEXW[16] = {
-            L'0', L'1', L'2', L'3', L'4', L'5', L'6', L'7', L'8', L'9', L'A', L'B', L'C', L'D', L'E', L'F'
-        };
-
         static constexpr char HEXA[16] = {
             '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'
         };
+
+        struct FormatSpec
+        {
+            Converter::ElementType type = Converter::ElementType::UnsignedChar;
+            const char* typeName = "unsigned char";
+            size_t elemSize = 1u;
+            bool needsCstdint = false;
+            bool needsCstddef = false;
+            bool usesStdByte = false;
+        };
+
+        static FormatSpec GetFormatSpec(Converter::ElementType t)
+        {
+            using Converter::ElementType;
+            switch (t)
+            {
+            case ElementType::UnsignedChar:  return { t, "unsigned char", 1u, false, true,  false };
+            case ElementType::Uint8:         return { t, "uint8_t",       1u, true,  false, false };
+            case ElementType::StdByte:       return { t, "std::byte",     1u, false, true,  true  };
+            case ElementType::UnsignedShort: return { t, "unsigned short",2u, false, true,  false };
+            case ElementType::Uint16:        return { t, "uint16_t",      2u, true,  false, false };
+            case ElementType::Uint32:        return { t, "uint32_t",      4u, true,  false, false };
+            case ElementType::Uint64:        return { t, "uint64_t",      8u, true,  false, false };
+            default:                         return { ElementType::UnsignedChar, "unsigned char", 1u, false, true,  false };
+            }
+        }
+
+        struct StyleSpec
+        {
+            Converter::ArrayStyle style = Converter::ArrayStyle::ConstArray;
+            const char* prefixNonArray = "const ";
+            const char* prefixStdArray = "const ";
+            const char* sizeQualifier  = "const ";
+            bool usesStdArray = false;
+        };
+
+        static StyleSpec GetStyleSpec(Converter::ArrayStyle s)
+        {
+            using Converter::ArrayStyle;
+            switch (s)
+            {
+            case ArrayStyle::ConstArray:
+                return { s, "const ", "const ", "const ", false };
+            case ArrayStyle::StaticConstArray:
+                return { s, "static const ", "static const ", "static const ", false };
+            case ArrayStyle::ConstexprArray:
+                return { s, "constexpr ", "constexpr ", "constexpr ", false };
+            case ArrayStyle::ConstexprStdArray:
+                return { s, "", "constexpr ", "constexpr ", true };
+            case ArrayStyle::StaticConstexprStdArray:
+                return { s, "", "static constexpr ", "static constexpr ", true };
+            default:
+                return { ArrayStyle::ConstArray, "const ", "const ", "const ", false };
+            }
+        }
+
+        static size_t ValuesPerLine(size_t elemSize)
+        {
+            const size_t v = (elemSize == 0u) ? 1u : (16u / elemSize);
+            return (v == 0u) ? 1u : v;
+        }
 
         static bool WriteAll(HANDLE h, const void* data, DWORD size, std::wstring& err)
         {
@@ -222,80 +280,145 @@ namespace EmbedPack::Converter
             return true;
         }
 
-        static void AppendHexByte(std::string& dst, uint8_t b, bool withCommaSpace)
+        static void AppendHexValue(std::string& dst, uint64_t value, size_t hexDigits)
         {
             dst.push_back('0');
             dst.push_back('x');
-            dst.push_back(HEXA[(b >> 4) & 0x0F]);
-            dst.push_back(HEXA[b & 0x0F]);
-            if (withCommaSpace)
+            for (size_t i = 0u; i < hexDigits; ++i)
             {
-                dst.push_back(',');
-                dst.push_back(' ');
+                const size_t shift = (hexDigits - 1u - i) * 4u;
+                const uint8_t nibble = static_cast<uint8_t>((value >> shift) & 0x0Fu);
+                dst.push_back(HEXA[nibble]);
             }
         }
 
-        static void BuildCArrayWideFast(const uint8_t* data, size_t n, std::wstring& out)
+        static void AppendIncludes(const FormatSpec& f, const StyleSpec& s, std::string& out)
         {
-            static constexpr wchar_t HEADER[]  = L"const unsigned char fileBytes[] = {";
-            static constexpr wchar_t INDENT[]  = L"\r\n    ";
-            static constexpr wchar_t FOOTER1[] = L"\r\n};\r\n";
-            static constexpr wchar_t FOOTER2[] = L"const size_t fileBytesSize = sizeof(fileBytes);\r\n";
+            bool any = false;
+            if (f.needsCstdint)
+            {
+                out.append("#include <cstdint>\r\n");
+                any = true;
+            }
+            if (f.needsCstddef || s.usesStdArray || f.needsCstdint)
+            {
+                out.append("#include <cstddef>\r\n");
+                any = true;
+            }
+            if (s.usesStdArray)
+            {
+                out.append("#include <array>\r\n");
+                any = true;
+            }
 
-            constexpr size_t headerLen  = (sizeof(HEADER)  / sizeof(wchar_t)) - 1u;
-            constexpr size_t indentLen  = (sizeof(INDENT)  / sizeof(wchar_t)) - 1u;
-            constexpr size_t footer1Len = (sizeof(FOOTER1) / sizeof(wchar_t)) - 1u;
-            constexpr size_t footer2Len = (sizeof(FOOTER2) / sizeof(wchar_t)) - 1u;
+            if (any)
+                out.append("\r\n");
+        }
 
-            const size_t lines = (n == 0u) ? 0u : ((n + 15u) / 16u);
-            const size_t sepCount = (n > 0u) ? (n - 1u) : 0u;
+        static void AppendHeader(const FormatSpec& f, const StyleSpec& s, size_t elementCount, std::string& out)
+        {
+            if (s.usesStdArray)
+            {
+                out.append(s.prefixStdArray);
+                out.append("std::array<");
+                out.append(f.typeName);
+                out.append(", ");
+                out.append(std::to_string(elementCount));
+                out.append("> fileBytes = {");
+            }
+            else
+            {
+                out.append(s.prefixNonArray);
+                out.append(f.typeName);
+                out.append(" fileBytes[] = {");
+            }
+        }
 
-            const size_t totalLen =
-                headerLen +
-                (lines * indentLen) +
-                (n * 4u) +
-                (sepCount * 2u) +
-                footer1Len +
-                footer2Len;
+        static void AppendFooter(
+            const FormatSpec& f,
+            const StyleSpec& s,
+            size_t elementCount,
+            size_t byteCount,
+            std::string& out)
+        {
+            out.append("\r\n};\r\n");
+
+            out.append(s.sizeQualifier);
+            out.append("size_t fileBytesSize = ");
+            out.append("sizeof(fileBytes);\r\n");
+
+            const size_t paddedBytes = elementCount * f.elemSize;
+            if (paddedBytes != byteCount)
+            {
+                out.append(s.sizeQualifier);
+                out.append("size_t fileBytesOriginalSize = ");
+                out.append(std::to_string(byteCount));
+                out.append(";\r\n");
+            }
+        }
+
+        static void AppendValueToken(const FormatSpec& f, uint64_t value, size_t hexDigits, std::string& out)
+        {
+            if (f.usesStdByte)
+                out.append("std::byte{");
+
+            AppendHexValue(out, value, hexDigits);
+
+            if (f.usesStdByte)
+                out.push_back('}');
+        }
+
+        static void BuildArrayAscii(
+            const uint8_t* data,
+            size_t byteCount,
+            const Converter::Format& fmt,
+            std::string& out)
+        {
+            const FormatSpec f = GetFormatSpec(fmt.elementType);
+            const StyleSpec s = GetStyleSpec(fmt.arrayStyle);
+
+            const size_t elemSize = f.elemSize;
+            const size_t elementCount = (elemSize == 0u)
+                ? 0u
+                : ((byteCount + elemSize - 1u) / elemSize);
+
+            const size_t hexDigits = std::max<size_t>(2u, elemSize * 2u);
+            const size_t valuesPerLine = ValuesPerLine(elemSize);
 
             out.clear();
-            out.resize(totalLen);
+            out.reserve(byteCount * 5u + 256u);
 
-            wchar_t* p = out.data();
+            AppendIncludes(f, s, out);
+            AppendHeader(f, s, elementCount, out);
 
-            std::memcpy(p, HEADER, headerLen * sizeof(wchar_t));
-            p += headerLen;
-
-            for (size_t i = 0u; i < n; ++i)
+            for (size_t i = 0u; i < elementCount; ++i)
             {
-                if ((i % 16u) == 0u)
+                if ((i % valuesPerLine) == 0u)
+                    out.append("\r\n    ");
+
+                uint64_t value = 0u;
+                const size_t base = i * elemSize;
+                for (size_t b = 0u; b < elemSize; ++b)
                 {
-                    std::memcpy(p, INDENT, indentLen * sizeof(wchar_t));
-                    p += indentLen;
+                    const size_t idx = base + b;
+                    const uint8_t byte = (idx < byteCount) ? data[idx] : 0u;
+                    value |= static_cast<uint64_t>(byte) << (8u * b);
                 }
 
-                const uint8_t b = data[i];
+                AppendValueToken(f, value, hexDigits, out);
 
-                *p++ = L'0';
-                *p++ = L'x';
-                *p++ = HEXW[(b >> 4) & 0x0Fu];
-                *p++ = HEXW[b & 0x0Fu];
-
-                if (i + 1u != n)
-                {
-                    *p++ = L',';
-                    *p++ = L' ';
-                }
+                if (i + 1u != elementCount)
+                    out.append(", ");
             }
 
-            std::memcpy(p, FOOTER1, footer1Len * sizeof(wchar_t));
-            p += footer1Len;
-
-            std::memcpy(p, FOOTER2, footer2Len * sizeof(wchar_t));
-            p += footer2Len;
+            AppendFooter(f, s, elementCount, byteCount, out);
         }
 
-        static bool ConvertSmallToMemory(const std::wstring& path, std::wstring& out, std::wstring& err)
+        static bool ConvertSmallToMemory(
+            const std::wstring& path,
+            const Converter::Format& fmt,
+            std::wstring& out,
+            std::wstring& err)
         {
             err.clear();
             out.clear();
@@ -352,7 +475,10 @@ namespace EmbedPack::Converter
             }
 
             const auto* data = static_cast<const uint8_t*>(view.get());
-            BuildCArrayWideFast(data, fileSize, out);
+
+            std::string ascii;
+            BuildArrayAscii(data, fileSize, fmt, ascii);
+            out.assign(ascii.begin(), ascii.end());
             return true;
         }
 
@@ -360,6 +486,7 @@ namespace EmbedPack::Converter
             const std::wstring& inPath,
             const std::wstring& outPath,
             HWND notifyHwnd,
+            const Converter::Format& fmt,
             std::wstring& err)
         {
             err.clear();
@@ -430,28 +557,49 @@ namespace EmbedPack::Converter
                 return false;
             }
 
-            const char* header1 = "const unsigned char fileBytes[] = {";
-            const char* footer1 = "\r\n};\r\n";
-            const char* footer2 = "const size_t fileBytesSize = sizeof(fileBytes);\r\n";
+            const FormatSpec f = GetFormatSpec(fmt.elementType);
+            const StyleSpec s = GetStyleSpec(fmt.arrayStyle);
 
-            if (!WriteAll(hOut, header1, static_cast<DWORD>(std::strlen(header1)), err))
-                return false;
+            const size_t elemSize = f.elemSize;
+            const size_t elementCount = (elemSize == 0u)
+                ? 0u
+                : ((fileSize + elemSize - 1u) / elemSize);
+            const size_t hexDigits = std::max<size_t>(2u, elemSize * 2u);
+            const size_t valuesPerLine = ValuesPerLine(elemSize);
 
             const uint8_t* data = static_cast<const uint8_t*>(view.get());
 
             std::string buf;
             buf.reserve(8u * 1024u * 1024u);
 
+            AppendIncludes(f, s, buf);
+            AppendHeader(f, s, elementCount, buf);
+            if (!WriteAll(hOut, buf.data(), static_cast<DWORD>(buf.size()), err))
+                return false;
+
+            buf.clear();
+
             const DWORD tickStepMs = 120u;
             DWORD lastTick = GetTickCount();
 
-            for (size_t i = 0u; i < fileSize; ++i)
+            for (size_t i = 0u; i < elementCount; ++i)
             {
-                if ((i % 16u) == 0u)
+                if ((i % valuesPerLine) == 0u)
                     buf.append("\r\n    ");
 
-                const bool withComma = (i + 1u != fileSize);
-                AppendHexByte(buf, data[i], withComma);
+                uint64_t value = 0u;
+                const size_t base = i * elemSize;
+                for (size_t b = 0u; b < elemSize; ++b)
+                {
+                    const size_t idx = base + b;
+                    const uint8_t byte = (idx < fileSize) ? data[idx] : 0u;
+                    value |= static_cast<uint64_t>(byte) << (8u * b);
+                }
+
+                AppendValueToken(f, value, hexDigits, buf);
+
+                if (i + 1u != elementCount)
+                    buf.append(", ");
 
                 if (buf.size() >= (8u * 1024u * 1024u))
                 {
@@ -464,7 +612,8 @@ namespace EmbedPack::Converter
                 if ((now - lastTick) >= tickStepMs)
                 {
                     lastTick = now;
-                    const int pct = (fileSize == 0u) ? 100 : static_cast<int>((i * 100u) / fileSize);
+                    const size_t processed = std::min<size_t>(fileSize, (i + 1u) * elemSize);
+                    const int pct = (fileSize == 0u) ? 100 : static_cast<int>((processed * 100u) / fileSize);
                     PostMessageW(notifyHwnd, AppMessages::WM_APP_PROGRESS, static_cast<WPARAM>(pct), 0);
                 }
             }
@@ -473,12 +622,11 @@ namespace EmbedPack::Converter
             {
                 if (!WriteAll(hOut, buf.data(), static_cast<DWORD>(buf.size()), err))
                     return false;
+                buf.clear();
             }
 
-            if (!WriteAll(hOut, footer1, static_cast<DWORD>(std::strlen(footer1)), err))
-                return false;
-
-            if (!WriteAll(hOut, footer2, static_cast<DWORD>(std::strlen(footer2)), err))
+            AppendFooter(f, s, elementCount, fileSize, buf);
+            if (!WriteAll(hOut, buf.data(), static_cast<DWORD>(buf.size()), err))
                 return false;
 
             PostMessageW(notifyHwnd, AppMessages::WM_APP_PROGRESS, 100, 0);
@@ -500,12 +648,12 @@ namespace EmbedPack::Converter
 
             if (ctx->job.largeMode)
             {
-                ok = ConvertLargeToFile(ctx->job.inPath, ctx->job.outPath, ctx->job.hwndNotify, err);
+                ok = ConvertLargeToFile(ctx->job.inPath, ctx->job.outPath, ctx->job.hwndNotify, ctx->job.format, err);
             }
             else
             {
                 std::wstring out;
-                ok = ConvertSmallToMemory(ctx->job.inPath, out, err);
+                ok = ConvertSmallToMemory(ctx->job.inPath, ctx->job.format, out, err);
                 if (ok && ctx->outSmall)
                     *(ctx->outSmall) = std::move(out);
             }
