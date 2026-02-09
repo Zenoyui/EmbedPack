@@ -12,6 +12,10 @@ Last updated: 2026-02-09
 
 EmbedPack is a Win32 desktop utility that converts arbitrary files into C/C++ byte array initializers with support for large-file streaming and asynchronous execution.
 
+## Screenshot
+
+![EmbedPack UI](docs/screenshot.png)
+
 ## Scope
 
 This repository contains a Windows (Win32) GUI utility that converts an input file into a C/C++ byte array initializer.
@@ -181,6 +185,7 @@ Large mode is designed to reduce peak memory usage by streaming output rather th
 - Initial documented version.
 - Win32 UI wrapper (`EmbedPack::App`) with asynchronous conversion jobs.
 - Converter supports small (in-memory) and large (stream-to-file) output paths with progress reporting.
+
 
 
 
