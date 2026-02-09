@@ -2,6 +2,10 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Latest Release](https://img.shields.io/github/v/release/Zenoyui/EmbedPack)
+![Downloads](https://img.shields.io/github/downloads/Zenoyui/EmbedPack/total)
+![Platform](https://img.shields.io/badge/platform-Windows%2010%2B-blue)
+![C++](https://img.shields.io/badge/C%2B%2B-17-blue)
+
 
 Version: 1.0.0  
 Last updated: 2026-02-09
@@ -177,5 +181,6 @@ Large mode is designed to reduce peak memory usage by streaming output rather th
 - Initial documented version.
 - Win32 UI wrapper (`EmbedPack::App`) with asynchronous conversion jobs.
 - Converter supports small (in-memory) and large (stream-to-file) output paths with progress reporting.
+
 
 
