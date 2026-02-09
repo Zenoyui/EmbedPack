@@ -298,6 +298,9 @@ namespace EmbedPack
 
         constexpr int ID_TT_PATH = 2001;
 
+        constexpr int ID_CMB_TYPE  = 3001;
+        constexpr int ID_CMB_STYLE = 3002;
+
         struct Layout
         {
             int pad = 12;
@@ -312,6 +315,10 @@ namespace EmbedPack
             int gap = 10;
 
             int editPad = 12;
+
+            int comboTypeW  = 140;
+            int comboStyleW = 200;
+            int comboH      = 28;
         };
 
         constexpr int MIN_CLIENT_W_96 = 600;
@@ -416,6 +423,9 @@ namespace EmbedPack
             void RecomputeDpi();
             void ApplyFonts();
             void LayoutChildren(int clientW, int clientH);
+            void PopulateDropdowns();
+            void OnArrayTypeChanged();
+            void OnArrayStyleChanged();
 
             void TrackHotButton(HWND btn);
             void SetButtonHot(HWND btn, bool hot);
@@ -435,6 +445,9 @@ namespace EmbedPack
             HWND m_btnConvert = nullptr;
             HWND m_btnCopy = nullptr;
 
+            HWND m_cmbType = nullptr;
+            HWND m_cmbStyle = nullptr;
+
             HWND m_lblPath = nullptr;
             HWND m_editOutput = nullptr;
 
@@ -449,6 +462,8 @@ namespace EmbedPack
 
             Layout m_lay{};
             int m_dpi = 96;
+
+            Converter::Format m_format{};
 
             std::wstring m_selectedFilePath;
             std::wstring m_outputW;
@@ -482,7 +497,7 @@ namespace EmbedPack
 
             m_lay.pad      = DpiScale(12, m_dpi);
             m_lay.toolbarH = DpiScale(54, m_dpi);
-            m_lay.statusH  = DpiScale(28, m_dpi);
+            m_lay.statusH  = DpiScale(34, m_dpi);
 
             m_lay.btnH  = DpiScale(30, m_dpi);
             m_lay.btnW1 = DpiScale(124, m_dpi);
@@ -491,6 +506,10 @@ namespace EmbedPack
 
             m_lay.gap = DpiScale(10, m_dpi);
             m_lay.editPad = DpiScale(12, m_dpi);
+
+            m_lay.comboTypeW  = DpiScale(160, m_dpi);
+            m_lay.comboStyleW = DpiScale(200, m_dpi);
+            m_lay.comboH      = DpiScale(28, m_dpi);
 
             if (m_fontUi) { DeleteObject(m_fontUi); m_fontUi = nullptr; }
             if (m_fontMono) { DeleteObject(m_fontMono); m_fontMono = nullptr; }
@@ -516,6 +535,9 @@ namespace EmbedPack
             if (m_btnSelect)  SendMessageW(m_btnSelect,  WM_SETFONT, (WPARAM)m_fontUi, TRUE);
             if (m_btnConvert) SendMessageW(m_btnConvert, WM_SETFONT, (WPARAM)m_fontUi, TRUE);
             if (m_btnCopy)    SendMessageW(m_btnCopy,    WM_SETFONT, (WPARAM)m_fontUi, TRUE);
+
+            if (m_cmbType)    SendMessageW(m_cmbType,    WM_SETFONT, (WPARAM)m_fontUi, TRUE);
+            if (m_cmbStyle)   SendMessageW(m_cmbStyle,   WM_SETFONT, (WPARAM)m_fontUi, TRUE);
 
             if (m_lblPath)    SendMessageW(m_lblPath,    WM_SETFONT, (WPARAM)m_fontUi, TRUE);
             if (m_editOutput) SendMessageW(m_editOutput, WM_SETFONT, (WPARAM)m_fontMono, TRUE);
@@ -545,6 +567,89 @@ namespace EmbedPack
 
             const int tabTwips = 4 * 1440 / 10;
             SendMessageW(m_editOutput, EM_SETTABSTOPS, 1, (LPARAM)&tabTwips);
+        }
+
+        void UiWindow::PopulateDropdowns()
+        {
+            struct TypeItem
+            {
+                Converter::ElementType type;
+                const wchar_t* label;
+            };
+
+            static const TypeItem kTypes[] = {
+                { Converter::ElementType::UnsignedChar,  L"unsigned char" },
+                { Converter::ElementType::Uint8,         L"uint8_t" },
+                { Converter::ElementType::StdByte,       L"std::byte" },
+                { Converter::ElementType::UnsignedShort, L"unsigned short" },
+                { Converter::ElementType::Uint16,        L"uint16_t" },
+                { Converter::ElementType::Uint32,        L"uint32_t" },
+                { Converter::ElementType::Uint64,        L"uint64_t" },
+            };
+
+            if (m_cmbType)
+            {
+                SendMessageW(m_cmbType, CB_RESETCONTENT, 0, 0);
+                for (const auto& t : kTypes)
+                {
+                    const int idx = (int)SendMessageW(m_cmbType, CB_ADDSTRING, 0, (LPARAM)t.label);
+                    SendMessageW(m_cmbType, CB_SETITEMDATA, idx, (LPARAM)static_cast<int>(t.type));
+                }
+                SendMessageW(m_cmbType, CB_SETCURSEL, 0, 0);
+                OnArrayTypeChanged();
+            }
+
+            struct StyleItem
+            {
+                Converter::ArrayStyle style;
+                const wchar_t* label;
+            };
+
+            static const StyleItem kStyles[] = {
+                { Converter::ArrayStyle::ConstArray,            L"const T data[] = { ... }" },
+                { Converter::ArrayStyle::StaticConstArray,      L"static const T data[] = { ... }" },
+                { Converter::ArrayStyle::ConstexprArray,        L"constexpr T data[] = { ... }" },
+                { Converter::ArrayStyle::ConstexprStdArray,     L"constexpr std::array<T, N> data = { ... }" },
+                { Converter::ArrayStyle::StaticConstexprStdArray,L"static constexpr std::array<T, N> data = { ... }" },
+            };
+
+            if (m_cmbStyle)
+            {
+                SendMessageW(m_cmbStyle, CB_RESETCONTENT, 0, 0);
+                for (const auto& s : kStyles)
+                {
+                    const int idx = (int)SendMessageW(m_cmbStyle, CB_ADDSTRING, 0, (LPARAM)s.label);
+                    SendMessageW(m_cmbStyle, CB_SETITEMDATA, idx, (LPARAM)static_cast<int>(s.style));
+                }
+                SendMessageW(m_cmbStyle, CB_SETCURSEL, 0, 0);
+                OnArrayStyleChanged();
+            }
+        }
+
+        void UiWindow::OnArrayTypeChanged()
+        {
+            if (!m_cmbType)
+                return;
+
+            const int idx = (int)SendMessageW(m_cmbType, CB_GETCURSEL, 0, 0);
+            if (idx < 0)
+                return;
+
+            const auto typeVal = static_cast<int>(SendMessageW(m_cmbType, CB_GETITEMDATA, idx, 0));
+            m_format.elementType = static_cast<Converter::ElementType>(typeVal);
+        }
+
+        void UiWindow::OnArrayStyleChanged()
+        {
+            if (!m_cmbStyle)
+                return;
+
+            const int idx = (int)SendMessageW(m_cmbStyle, CB_GETCURSEL, 0, 0);
+            if (idx < 0)
+                return;
+
+            const auto styleVal = static_cast<int>(SendMessageW(m_cmbStyle, CB_GETITEMDATA, idx, 0));
+            m_format.arrayStyle = static_cast<Converter::ArrayStyle>(styleVal);
         }
 
         void UiWindow::CacheEditRect()
@@ -728,6 +833,27 @@ namespace EmbedPack
                 InvalidateRect(m_lblPath, nullptr, TRUE);
             }
 
+            const int comboY = (clientH - statusH) + std::max(0, (statusH - m_lay.comboH) / 2);
+            const int comboH = m_lay.comboH;
+            const int comboDropH = comboH * 8;
+            int right = pad + innerW;
+
+            if (m_cmbStyle)
+            {
+                const int w = m_lay.comboStyleW;
+                right -= w;
+                SetWindowPos(m_cmbStyle, nullptr, right, comboY, w, comboDropH, SWP_NOZORDER | SWP_NOACTIVATE);
+                right -= gap;
+            }
+
+            if (m_cmbType)
+            {
+                const int w = m_lay.comboTypeW;
+                right -= w;
+                SetWindowPos(m_cmbType, nullptr, right, comboY, w, comboDropH, SWP_NOZORDER | SWP_NOACTIVATE);
+                right -= gap;
+            }
+
             const int editY = y + toolbarH + pad;
             const int editH = innerH - pad;
             const int editX = x;
@@ -827,6 +953,23 @@ namespace EmbedPack
             sRc.left += m_lay.pad;
             sRc.right -= m_lay.pad;
 
+            auto clampRightForCtrl = [&](HWND ctrl)
+            {
+                if (!ctrl) return;
+                RECT cr{};
+                if (!GetWindowRect(ctrl, &cr))
+                    return;
+                POINT tl{ cr.left, cr.top };
+                ScreenToClient(m_hwnd, &tl);
+                sRc.right = std::min(sRc.right, tl.x - m_lay.pad);
+            };
+
+            clampRightForCtrl(m_cmbType);
+            clampRightForCtrl(m_cmbStyle);
+
+            if (sRc.right < sRc.left)
+                sRc.right = sRc.left;
+
             DrawTextEllipsized(dc, m_statusText.c_str(), sRc, DT_SINGLELINE | DT_VCENTER | DT_LEFT, g_theme.textDim);
 
             if (!IsRectEmpty(&m_rcEditClient))
@@ -868,6 +1011,18 @@ namespace EmbedPack
                 m_hwnd, (HMENU)ID_BTN_COPY, m_hInstance, nullptr);
 
             EnableWindow(m_btnCopy, FALSE);
+
+            m_cmbType = CreateWindowExW(
+                0, L"COMBOBOX", nullptr,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | CBS_HASSTRINGS,
+                0, 0, 0, 0,
+                m_hwnd, (HMENU)(INT_PTR)ID_CMB_TYPE, m_hInstance, nullptr);
+
+            m_cmbStyle = CreateWindowExW(
+                0, L"COMBOBOX", nullptr,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | CBS_HASSTRINGS,
+                0, 0, 0, 0,
+                m_hwnd, (HMENU)(INT_PTR)ID_CMB_STYLE, m_hInstance, nullptr);
 
             m_lblPath = CreateWindowExW(
                 0, L"STATIC", L"",
@@ -911,6 +1066,7 @@ namespace EmbedPack
 
             ApplyFonts();
             ConfigureRichEditAppearance();
+            PopulateDropdowns();
 
             UpdatePathText(L"No input file selected");
             UpdateStatusText(L"Ready");
@@ -1078,6 +1234,7 @@ namespace EmbedPack
             job.inPath = m_selectedFilePath;
             job.outPath = outPath;
             job.largeMode = largeMode;
+            job.format = m_format;
 
             if (!Converter::StartConversionAsync(job, m_outputW))
             {
@@ -1204,6 +1361,12 @@ namespace EmbedPack
                 case ID_BTN_SELECT:  OnSelectFile(); return 0;
                 case ID_BTN_CONVERT: OnConvert();    return 0;
                 case ID_BTN_COPY:    OnCopy();       return 0;
+                case ID_CMB_TYPE:
+                    if (HIWORD(wParam) == CBN_SELCHANGE) OnArrayTypeChanged();
+                    return 0;
+                case ID_CMB_STYLE:
+                    if (HIWORD(wParam) == CBN_SELCHANGE) OnArrayStyleChanged();
+                    return 0;
                 default: break;
                 }
                 return 0;
