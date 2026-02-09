@@ -46,7 +46,7 @@ The converter runs asynchronously using a dedicated worker thread. UI updates ar
 - `WM_APP_PROGRESS`: periodic progress updates (percentage).
 - `WM_APP_DONE`: completion notification with a success flag and a result message.
 
-## Threat Model
+## Operational Boundaries and Failure Modes
 
 This section describes operational risks and misuse cases relevant to correctness and reliability. It does not claim security hardening beyond the stated behavior.
 
@@ -174,3 +174,4 @@ Large mode is designed to reduce peak memory usage by streaming output rather th
 - Initial documented version.
 - Win32 UI wrapper (`EmbedPack::App`) with asynchronous conversion jobs.
 - Converter supports small (in-memory) and large (stream-to-file) output paths with progress reporting.
+
