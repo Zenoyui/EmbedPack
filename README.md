@@ -7,8 +7,9 @@
 ![C++](https://img.shields.io/badge/C%2B%2B-17-blue)
 
 
-Version: 2.0.0  
+Version: 2.0.0
 Last updated: 2026-02-09
+Project Type: D - Applications (Desktop Application)
 
 EmbedPack is a Win32 desktop utility that converts arbitrary files into C/C++ byte array initializers with support for large-file streaming and asynchronous execution.
 
@@ -59,9 +60,70 @@ The converter runs asynchronously using a dedicated worker thread. UI updates ar
 - `WM_APP_PROGRESS`: periodic progress updates (percentage).
 - `WM_APP_DONE`: completion notification with a success flag and a result message.
 
-## Operational Boundaries and Failure Modes
+## Runtime Characteristics
 
-This section describes operational risks and misuse cases relevant to correctness and reliability. It does not claim security hardening beyond the stated behavior.
+### Execution Model
+
+- UI thread: Win32 message loop handles user input and UI updates
+- Worker thread: spawned per conversion job for blocking file I/O and byte array generation
+- Non-blocking UI: conversion runs asynchronously, UI remains responsive
+
+### Threading Model
+
+- Single UI thread owns all HWND and GDI resources
+- Single worker thread per active conversion job
+- Thread communication: worker posts WM_APP_PROGRESS and WM_APP_DONE messages to UI thread via PostMessageW
+- No shared mutable state between threads (worker receives copy of job parameters)
+
+### State Management
+
+- Stateful: UI maintains current file selection, format settings, output buffer
+- State lifetime: persists until new file selected or application closed
+- No persistent state on disk (settings reset on restart)
+
+### Memory Allocation Model
+
+- Dynamic allocation: file mapping for input, heap allocation for output buffer (small mode)
+- Large mode: output streamed to disk with fixed 8MB buffer to limit memory growth
+- Worker thread allocates heap message for completion notification (freed by UI thread)
+
+### Lifecycle Model
+
+- Initialization: OleInitialize, common controls initialization, window creation
+- Runtime: user selects file, chooses format, triggers conversion
+- Conversion: worker thread spawned, job executed, completion message posted
+- Shutdown: worker thread detached (no explicit join), OleUninitialize, window destruction
+
+## System Boundaries
+
+This section defines the boundaries of the system, external dependencies, trust assumptions, and operational scope.
+
+### What is included in the system
+
+- Win32 GUI application (main window, dialogs, message loop)
+- File I/O subsystem (file mapping, buffered write for large files)
+- Byte array formatter (hex encoding, header/footer generation)
+- Format selector (element type, array style configuration)
+
+### External dependencies
+
+- Windows OS: ntdll.dll, kernel32.dll (file mapping, threading)
+- User32.dll, Comctl32.dll (UI controls, dialogs)
+- MSVC runtime: CRT heap allocator
+- Msftedit.dll: RichEdit control for output display
+
+### Trust boundaries
+
+- Assumes trusted local filesystem: no validation of file content beyond size check
+- Assumes valid file paths from OpenFileDialog API (no additional path sanitization)
+- UI thread trusts worker thread completion message (no authentication of message source)
+
+### External interfaces
+
+- Win32 OpenFileDialog/SaveFileDialog: user file selection
+- Windows file mapping API: CreateFileMappingW, MapViewOfFile
+- Clipboard API: SetClipboardData for text output
+- Worker thread: CreateThread, PostMessageW for completion notification
 
 ### In-scope scenarios
 
@@ -87,6 +149,35 @@ This section describes operational risks and misuse cases relevant to correctnes
 - Very large conversions can take significant time and generate very large text outputs; large mode mitigates memory growth but output size still scales with input size.
 - Conversion performance depends on disk throughput and OS file mapping behavior.
 - If the application is terminated during large-mode conversion, the output file may be incomplete.
+
+## Risk & Failure Model
+
+### Operational Risks
+
+- File mapping limitation: conversion fails if file cannot be mapped (network drives, restricted filesystems)
+- Memory exhaustion: small mode limited to UI_SOFT_LIMIT (8MiB) to prevent UI freeze due to excessive memory allocation
+- Output size growth: generated text output is 4-6x larger than input size (hex encoding overhead)
+- Worker thread termination: if application closed during conversion, worker thread detached (no cleanup of partial output file)
+
+### Failure Scenarios
+
+- Input file locked or inaccessible: conversion aborts with error message "open: fail (path=..., code=...)"
+- File mapping failure: conversion aborts, typically due to insufficient virtual address space or permissions
+- Output file creation failure: large mode aborts if output path invalid or write permission denied
+- Mid-conversion application termination: large mode leaves partial output file on disk (no atomic write)
+
+### Out-of-scope scenarios
+
+- Network filesystem edge cases: SMB/NFS mounts with non-standard file mapping behavior not tested
+- Files exceeding size_t limits on 32-bit systems: conversion will fail during size query
+- Non-standard file permissions: assumes standard Windows file ACLs
+- Compressed/encrypted NTFS files: relies on OS transparent decompression/decryption
+
+### Residual risks
+
+- Large mode partial output: no transactional write, partial file remains if process killed
+- Worker thread leak on forced termination: thread handle not joined, relies on OS cleanup
+- UI soft limit tuning: 8MiB threshold is heuristic, may need adjustment for low-memory systems
 
 ## Mechanisms / Implementation
 
@@ -118,7 +209,7 @@ Small mode generates the same logical content as a Unicode string in memory (int
 
 ### I/O strategy
 
-- Input file is opened read-only and mapped into memory via file mapping for efficient access.
+- Input file is opened read-only and mapped into memory via file mapping.
 - Large-mode output is written incrementally to the output file using an internal buffered approach to avoid holding the entire generated text in memory.
 - Progress is reported periodically during large-mode conversion.
 
@@ -148,7 +239,7 @@ Performance characteristics depend on:
 - Storage speed (read for input, write for output).
 - CPU cost of formatting bytes into hex text.
 
-Large mode is designed to reduce peak memory usage by streaming output rather than building a full in-memory string. Small mode generates a full in-memory Unicode string and is limited by the UI soft limit.
+Large mode reduces peak memory usage by streaming output rather than building a full in-memory string. Small mode generates a full in-memory Unicode string and is limited by the UI soft limit.
 
 ## Build and run
 
@@ -167,7 +258,7 @@ Large mode is designed to reduce peak memory usage by streaming output rather th
 
 ### Batch build script
 
-- `build_release.bat` provides a Windows batch entry point for a Release build (see the script for details).
+- `build_release.bat` is a Windows batch entry point for a Release build (see the script for details).
 
 ## Project structure
 
@@ -191,16 +282,3 @@ Large mode is designed to reduce peak memory usage by streaming output rather th
 
 - `CoreServices.cpp`  
   Implementations of clipboard, file dialogs, file sizing, and conversion logic (small in-memory path and large streaming path).
-
-## Change Log
-
-### 2.0.0 — 2026-02-09
-- Added UI dropdowns to choose output element type (`unsigned char`, `uint8_t`, `std::byte`, `unsigned short`, `uint16_t`, `uint32_t`, `uint64_t`).
-- Added array style presets (`const`, `static const`, `constexpr`, `constexpr std::array`, `static constexpr std::array`).
-- Converter now emits required headers automatically and reports `fileBytesOriginalSize` when padding is applied for wider element types.
-- Status bar height adjusted to accommodate format selectors.
-
-### 1.0.0 — 2026-02-09
-- Initial documented version.
-- Win32 UI wrapper (`EmbedPack::App`) with asynchronous conversion jobs.
-- Converter supports small (in-memory) and large (stream-to-file) output paths with progress reporting.
